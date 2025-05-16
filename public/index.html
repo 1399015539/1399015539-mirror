@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <script>
+        // 立即执行的请求拦截器
+        (function() {
+            // 保存原始的 fetch 函数
+            const originalFetch = window.fetch;
+            
+            // 重写 fetch 函数
+            window.fetch = function(input, init) {
+                const url = typeof input === 'string' ? input : input.url;
+                console.log('[Interceptor] Intercepted fetch:', url);
+                
+                // 检查是否是 API 请求
+                if (url.includes('/api/')) {
+                    // 解析 URL，保留查询参数
+                    const urlObj = new URL(url);
+                    const newUrl = `http://localhost:3000${urlObj.pathname}${urlObj.search}`;
+                    console.log('[Interceptor] Rewriting API request to:', newUrl);
+                    
+                    // 设置必要的请求头
+                    if (!init) init = {};
+                    if (!init.headers) init.headers = {};
+                    init.headers['Origin'] = 'http://localhost:3000';
+                    init.headers['Referer'] = 'http://localhost:3000/';
+                    init.headers['Accept'] = '*/*';
+                    init.headers['Accept-Language'] = 'zh-CN,zh;q=0.9';
+                    init.headers['sec-fetch-dest'] = 'empty';
+                    init.headers['sec-fetch-mode'] = 'cors';
+                    init.headers['sec-fetch-site'] = 'same-origin';
+                    init.headers['x-csrf-protection'] = '1';
+                    
+                    // 使用新的 URL 发起请求
+                    input = typeof input === 'string' ? newUrl : new Request(newUrl, input);
+                }
+                
+                return originalFetch.call(this, input, init);
+            };
+            
+            // 保存原始的 XMLHttpRequest
+            const originalXHR = window.XMLHttpRequest;
+            
+            // 重写 XMLHttpRequest
+            window.XMLHttpRequest = function() {
+                const xhr = new originalXHR();
+                const originalOpen = xhr.open;
+                
+                xhr.open = function(method, url, ...rest) {
+                    console.log('[Interceptor] Intercepted XHR:', url);
+                    
+                    // 检查是否是 API 请求
+                    if (url.includes('/api/')) {
+                        // 解析 URL，保留查询参数
+                        const urlObj = new URL(url);
+                        const newUrl = `http://localhost:3000${urlObj.pathname}${urlObj.search}`;
+                        console.log('[Interceptor] Rewriting XHR API request to:', newUrl);
+                        
+                        // 设置必要的请求头
+                        xhr.setRequestHeader('Origin', 'http://localhost:3000');
+                        xhr.setRequestHeader('Referer', 'http://localhost:3000/');
+                        xhr.setRequestHeader('Accept', '*/*');
+                        xhr.setRequestHeader('Accept-Language', 'zh-CN,zh;q=0.9');
+                        xhr.setRequestHeader('sec-fetch-dest', 'empty');
+                        xhr.setRequestHeader('sec-fetch-mode', 'cors');
+                        xhr.setRequestHeader('sec-fetch-site', 'same-origin');
+                        xhr.setRequestHeader('x-csrf-protection', '1');
+                        
+                        url = newUrl;
+                    }
+                    
+                    return originalOpen.call(this, method, url, ...rest);
+                };
+                
+                return xhr;
+            };
+        })();
+    </script>
+    <script>
+        /* ---------- runtime URL rewriter ---------------------------------- */
+        (function () {
+          const NEED_REWRITE = u =>
+            /^https?:\/\/([^\/]+\.)?(midjourney\.com|challenges\.cloudflare\.com)\//i
+              .test(u);
+        
+          /* --- 1. 拦截 <script>/<link>/<img> 的 src|href --- */
+          const origSet = Element.prototype.setAttribute;
+          Element.prototype.setAttribute = function (n, v) {
+            if ((n === 'src' || n === 'href') && typeof v === 'string' && NEED_REWRITE(v)) {
+              const u = new URL(v);
+              v = u.pathname + u.search;
+            }
+            return origSet.call(this, n, v);
+          };
+          ['src', 'href'].forEach(prop => {
+            const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, prop)
+                     || Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, prop)
+                     || Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, prop);
+            if (!desc) return;
+            Object.defineProperty(Element.prototype, prop, {
+              set(val) {
+                if (typeof val === 'string' && NEED_REWRITE(val)) {
+                  const u = new URL(val);
+                  val = u.pathname + u.search;
+                }
+                return desc.set.call(this, val);
+              },
+              get: desc.get,
+              configurable: true,
+              enumerable: true
+            });
+          });
+        
+          /* --- 2. 拦截 window.fetch (解决 CORS) ------------------- */
+          const origFetch = window.fetch;
+          window.fetch = function (input, init) {
+            let url = typeof input === 'string' ? input : input.url;
+            console.log('Fetch intercepted:', url);
+            if (NEED_REWRITE(url)) {
+              const u = new URL(url);
+              console.log('URL parsed:', u);
+              // 修改 API 请求路径
+              if (u.pathname.startsWith('/api/')) {
+                url = `http://localhost:3000${u.pathname}${u.search}`;
+                console.log('Rewritten URL:', url);
+                // 添加必要的请求头
+                if (!init) init = {};
+                if (!init.headers) init.headers = {};
+                init.headers['Origin'] = 'http://localhost:3000';
+                init.headers['Referer'] = 'http://localhost:3000/';
+                init.headers['Accept'] = '*/*';
+                init.headers['Accept-Language'] = 'zh-CN,zh;q=0.9';
+                init.headers['sec-fetch-dest'] = 'empty';
+                init.headers['sec-fetch-mode'] = 'cors';
+                init.headers['sec-fetch-site'] = 'same-origin';
+                init.headers['x-csrf-protection'] = '1';
+              } else {
+                url = u.pathname + u.search;
+              }
+              input = (typeof input === 'string') ? url : new Request(url, input);
+            }
+            return origFetch.call(this, input, init);
+          };
+        
+          /* --- 3. 拦截 XMLHttpRequest.open （老代码兜底） ----------- */
+          const origOpen = XMLHttpRequest.prototype.open;
+          XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+            console.log('XHR intercepted:', url);
+            if (typeof url === 'string' && NEED_REWRITE(url)) {
+              const u = new URL(url);
+              console.log('XHR URL parsed:', u);
+              // 修改 API 请求路径
+              if (u.pathname.startsWith('/api/')) {
+                url = `http://localhost:3000${u.pathname}${u.search}`;
+                console.log('XHR rewritten URL:', url);
+                // 添加必要的请求头
+                this.setRequestHeader('Origin', 'http://localhost:3000');
+                this.setRequestHeader('Referer', 'http://localhost:3000/');
+                this.setRequestHeader('Accept', '*/*');
+                this.setRequestHeader('Accept-Language', 'zh-CN,zh;q=0.9');
+                this.setRequestHeader('sec-fetch-dest', 'empty');
+                this.setRequestHeader('sec-fetch-mode', 'cors');
+                this.setRequestHeader('sec-fetch-site', 'same-origin');
+                this.setRequestHeader('x-csrf-protection', '1');
+              } else {
+                url = u.pathname + u.search;
+              }
+            }
+            return origOpen.call(this, method, url, ...rest);
+          };
+
+          /* --- 4. 拦截 XMLHttpRequest.setRequestHeader ----------- */
+          const origSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+          XMLHttpRequest.prototype.setRequestHeader = function (header, value) {
+            console.log('Setting header:', header, value);
+            return origSetRequestHeader.call(this, header, value);
+          };
+
+          /* --- 5. 拦截 window.Request ----------- */
+          const origRequest = window.Request;
+          window.Request = function (input, init) {
+            console.log('Request intercepted:', input);
+            if (typeof input === 'string' && NEED_REWRITE(input)) {
+              const u = new URL(input);
+              console.log('Request URL parsed:', u);
+              if (u.pathname.startsWith('/api/')) {
+                input = `http://localhost:3000${u.pathname}${u.search}`;
+                console.log('Request rewritten URL:', input);
+                if (!init) init = {};
+                if (!init.headers) init.headers = {};
+                init.headers['Origin'] = 'http://localhost:3000';
+                init.headers['Referer'] = 'http://localhost:3000/';
+                init.headers['Accept'] = '*/*';
+                init.headers['Accept-Language'] = 'zh-CN,zh;q=0.9';
+                init.headers['sec-fetch-dest'] = 'empty';
+                init.headers['sec-fetch-mode'] = 'cors';
+                init.headers['sec-fetch-site'] = 'same-origin';
+                init.headers['x-csrf-protection'] = '1';
+              }
+            }
+            return new origRequest(input, init);
+          };
+        })();
+        </script>
+
+
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Midjourney Mirror</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background: #000;
+            color: #fff;
+        }
+        #root {
+            width: 100%;
+            min-height: 100vh;
+        }
+        .loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 24px;
+            color: #fff;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 8px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div id="root">
+        <div class="loading">Loading Midjourney Content...</div>
+    </div>
+
+    <script>
+        
+        // 处理页面中的所有链接，确保它们指向镜像站
+        function processLinks(doc) {
+            const links = doc.getElementsByTagName('a');
+            for (let link of links) {
+                const href = link.getAttribute('href');
+                if (href) {
+                    // 如果是相对路径，直接保留
+                    if (href.startsWith('/')) {
+                        continue;
+                    }
+                    // 如果是 Midjourney 域名的链接，修改为相对路径
+                    if (href.includes('midjourney.com') ||
+                    href.includes('challenges.cloudflare.com')) {
+                        const url = new URL(href);
+                        link.setAttribute('href', url.pathname + url.search);
+                    }
+                }
+            }
+        }
+
+        // 处理页面中的所有资源链接
+        function processResources(doc) {
+            // 处理样式表
+            const styles = doc.getElementsByTagName('link');
+            for (let style of styles) {
+                const href = style.getAttribute('href');
+                if (href) {
+                    // 如果是相对路径，直接保留
+                    if (href.startsWith('/')) {
+                        continue;
+                    }
+                    // 如果是 Midjourney 域名的链接，修改为相对路径
+                    if (href.includes('midjourney.com') ||
+                    href.includes('challenges.cloudflare.com')) {
+                        const url = new URL(href);
+                        style.setAttribute('href', url.pathname + url.search);
+                    }
+                }
+            }
+
+            // 处理脚本
+            const scripts = doc.getElementsByTagName('script');
+            for (let script of scripts) {
+                const src = script.getAttribute('src');
+                if (src) {
+                    // 如果是相对路径，直接保留
+                    if (src.startsWith('/')) {
+                        continue;
+                    }
+                    // 如果是 Midjourney 域名的链接，修改为相对路径
+                    if (src.includes('midjourney.com') ||
+                    src.includes('challenges.cloudflare.com')) {
+                        const url = new URL(src);
+                        script.setAttribute('src', url.pathname + url.search);
+                    }
+                }
+            }
+
+            // 处理图片
+            const images = doc.getElementsByTagName('img');
+            for (let img of images) {
+                const src = img.getAttribute('src');
+                if (src) {
+                    // 如果是相对路径，直接保留
+                    if (src.startsWith('/')) {
+                        continue;
+                    }
+                    // 如果是 Midjourney 域名的链接，修改为相对路径
+                    if (src.includes('midjourney.com') ||
+                    src.includes('challenges.cloudflare.com')){
+                        const url = new URL(src);
+                        img.setAttribute('src', url.pathname + url.search);
+                    }
+                }
+            }
+        }
+
+        // 修改 fetch 请求处理
+        const originalFetch = window.fetch;
+        window.fetch = async function(input, init) {
+            try {
+                const url = typeof input === 'string' ? input : input.url;
+                console.log('Fetch intercepted:', url);
+
+                // 确保请求包含必要的头信息
+                const headers = new Headers(init?.headers || {});
+                headers.set('Accept', '*/*');
+                headers.set('Accept-Language', 'zh-CN,zh;q=0.9');
+                headers.set('Origin', window.location.origin);
+                headers.set('Referer', window.location.href);
+                headers.set('sec-fetch-dest', 'empty');
+                headers.set('sec-fetch-mode', 'cors');
+                headers.set('sec-fetch-site', 'same-origin');
+                headers.set('x-csrf-protection', '1');
+
+                // 如果是 API 请求，重写到本地服务器
+                if (url.includes('/api/')) {
+                    const newUrl = url.replace('https://www.midjourney.com', 'http://localhost:3000');
+                    console.log('Rewriting API request to:', newUrl);
+                    input = typeof input === 'string' ? newUrl : new Request(newUrl, input);
+                }
+
+                // 添加重试机制
+                let retries = 3;
+                let lastError = null;
+
+                while (retries > 0) {
+                    try {
+                        const response = await originalFetch(input, {
+                            ...init,
+                            headers,
+                            credentials: 'include',
+                            mode: 'cors'
+                        });
+
+                        if (!response.ok) {
+                            console.error(`Fetch error: ${response.status} ${response.statusText}`);
+                            // 如果是认证错误，尝试重新加载页面
+                            if (response.status === 401 || response.status === 403) {
+                                console.log('Authentication error, reloading page...');
+                                setTimeout(() => {
+                                    window.location.reload();
+                                }, 1000);
+                            }
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+                        return response;
+                    } catch (error) {
+                        lastError = error;
+                        retries--;
+                        if (retries > 0) {
+                            console.warn(`Fetch failed, retrying... (${retries} attempts left)`);
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                        }
+                    }
+                }
+
+                throw lastError;
+            } catch (error) {
+                console.error('Fetch error:', error);
+                throw error;
+            }
+        };
+
+        // 修改资源加载处理
+        function loadScript(src) {
+            return new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = src;
+                script.async = true;
+                script.onload = resolve;
+                script.onerror = (error) => {
+                    console.error(`Error loading script: ${src}`, error);
+                    // 如果是 React 相关脚本，尝试重新加载
+                    if (src.includes('react') || src.includes('framework')) {
+                        setTimeout(() => {
+                            console.log(`Retrying to load React script: ${src}`);
+                            loadScript(src).catch(console.error);
+                        }, 1000);
+                    }
+                    reject(error);
+                };
+                document.head.appendChild(script);
+            });
+        }
+
+        // 修改页面内容处理
+        async function processPageContent(html) {
+            try {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                
+                // 处理所有资源链接
+                processLinks(doc);
+                processResources(doc);
+
+                // 提取并加载所有脚本和样式
+                const scripts = Array.from(doc.getElementsByTagName('script'))
+                    .filter(script => script.src)
+                    .map(script => script.src);
+                
+                const styles = Array.from(doc.getElementsByTagName('link'))
+                    .filter(link => link.rel === 'stylesheet')
+                    .map(link => link.href);
+
+                // 先加载所有样式
+                try {
+                    await Promise.all(styles.map(loadStyle));
+                } catch (error) {
+                    console.error('Error loading styles:', error);
+                }
+
+                // 获取处理后的 HTML
+                document.documentElement.innerHTML = doc.documentElement.innerHTML;
+
+                // 按顺序加载脚本，确保 React 相关脚本先加载
+                const reactScripts = scripts.filter(src => src.includes('react') || src.includes('framework'));
+                const otherScripts = scripts.filter(src => !src.includes('react') && !src.includes('framework'));
+
+                // 先加载 React 相关脚本
+                for (const src of reactScripts) {
+                    try {
+                        await loadScript(src);
+                    } catch (error) {
+                        console.error('Error loading React script:', src, error);
+                    }
+                }
+
+                // 再加载其他脚本
+                for (const src of otherScripts) {
+                    try {
+                        await loadScript(src);
+                    } catch (error) {
+                        console.error('Error loading script:', src, error);
+                    }
+                }
+            } catch (error) {
+                console.error('Error processing page content:', error);
+                // 如果处理失败，尝试重新加载页面
+                setTimeout(() => {
+                    window.location.reload();
+                }, 1000);
+            }
+        }
+
+        // 动态加载样式
+        function loadStyle(href) {
+            return new Promise((resolve, reject) => {
+                const link = document.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = href;
+                link.onload = resolve;
+                link.onerror = (error) => {
+                    console.error(`Error loading style: ${href}`, error);
+                    // 尝试重新加载
+                    setTimeout(() => {
+                        console.log(`Retrying to load style: ${href}`);
+                        loadStyle(href).catch(console.error);
+                    }, 1000);
+                    reject(error);
+                };
+                document.head.appendChild(link);
+            });
+        }
+
+        async function fetchMidjourneyContent() {
+            try {
+                const loadingElement = document.querySelector('.loading');
+                
+                // 使用新的 API 端点
+                const response = await fetch('/api/explore?amount=50&page=0&feed=top&_ql=explore', {
+                    headers: {
+                        'Cache-Control': 'no-cache',
+                        'Pragma': 'no-cache',
+                        'Origin': 'http://localhost:3000',
+                        'Referer': 'http://localhost:3000/',
+                        'Accept': '*/*',
+                        'Accept-Language': 'zh-CN,zh;q=0.9',
+                        'sec-fetch-dest': 'empty',
+                        'sec-fetch-mode': 'cors',
+                        'sec-fetch-site': 'same-origin',
+                        'x-csrf-protection': '1'
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                // 处理页面内容
+                await processPageContent(data);
+
+                // 添加点击事件处理
+                document.addEventListener('click', async (e) => {
+                    // 如果点击的是链接
+                    if (e.target.tagName === 'A') {
+                        const href = e.target.getAttribute('href');
+                        if (href && href.startsWith('/')) {
+                            e.preventDefault();
+                            
+                            // 显示加载提示
+                            loadingElement.style.display = 'block';
+                            
+                            try {
+                                // 使用新的 API 端点
+                                const newPageResponse = await fetch(href, {
+                                    headers: {
+                                        'Cache-Control': 'no-cache',
+                                        'Pragma': 'no-cache'
+                                    }
+                                });
+                                
+                                if (!newPageResponse.ok) {
+                                    throw new Error(`HTTP error! status: ${newPageResponse.status}`);
+                                }
+                                
+                                const newData = await newPageResponse.json();
+                                await processPageContent(newData);
+                                history.pushState(null, '', href);
+                            } catch (error) {
+                                console.error('Error loading new page:', error);
+                            } finally {
+                                loadingElement.style.display = 'none';
+                            }
+                        }
+                    }
+                });
+
+                // 处理浏览器前进/后退
+                window.addEventListener('popstate', async () => {
+                    const currentPath = window.location.pathname + window.location.search;
+                    loadingElement.style.display = 'block';
+                    
+                    try {
+                        // 使用新的 API 端点
+                        const response = await fetch(currentPath, {
+                            headers: {
+                                'Cache-Control': 'no-cache',
+                                'Pragma': 'no-cache'
+                            }
+                        });
+                        
+                        if (!response.ok) {
+                            throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+                        
+                        const data = await response.json();
+                        await processPageContent(data);
+                    } catch (error) {
+                        console.error('Error handling navigation:', error);
+                    } finally {
+                        loadingElement.style.display = 'none';
+                    }
+                });
+            } catch (error) {
+                console.error('Error fetching content:', error);
+                document.getElementById('root').innerHTML = `
+                    <div class="loading">Error loading content: ${error.message}</div>
+                `;
+            }
+        }
+
+        // 页面加载完成后获取内容
+        window.addEventListener('load', fetchMidjourneyContent);
+
+        // 添加错误边界
+        class ErrorBoundary {
+            static handleError(error, errorInfo) {
+                console.error('React error:', error, errorInfo);
+                // 如果是 React 错误 #418 或 #423，尝试重新加载页面
+                if (error.message.includes('418') || error.message.includes('423')) {
+                    console.log('React error detected, reloading page...');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                }
+            }
+
+            static handleUnhandledRejection(event) {
+                console.error('Unhandled promise rejection:', event.reason);
+                // 如果是网络错误，尝试重新加载页面
+                if (event.reason instanceof TypeError && event.reason.message.includes('Failed to fetch')) {
+                    console.log('Network error detected, reloading page...');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                }
+            }
+        }
+
+        // 注册错误处理器
+        window.addEventListener('error', (event) => {
+            ErrorBoundary.handleError(event.error, event.errorInfo);
+        });
+
+        window.addEventListener('unhandledrejection', (event) => {
+            ErrorBoundary.handleUnhandledRejection(event);
+        });
+    </script>
+</body>
+</html> 
