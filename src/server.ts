@@ -39,79 +39,55 @@ const corsOptions = {
 // 处理资源请求
 async function handleResourceRequest(req: express.Request, res: express.Response) {
   const startTime = Date.now();
-  let url = `https://www.midjourney.com${req.path}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
   
-  logger.info(`[Debug] 请求进入 handleResourceRequest: ${req.path}`, {
+  // 标准化请求路径
+  let pathStr = req.path;
+  
+  // 如果路径中包含多个斜杠，将其规范化为单个斜杠
+  pathStr = pathStr.replace(/\/+/g, '/');
+  
+  // 移除路径中可能存在的 localhost:3000
+  pathStr = pathStr.replace(/^\/+localhost:3000/g, '');
+  
+  // 构建目标 URL
+  let url = '';
+  if (pathStr.startsWith('/api/')) {
+    // API 请求直接转发到本地
+    logger.info(`[API] 处理 API 请求: ${pathStr}`);
+    return apiRoutes(req, res, () => {});
+  } else if (pathStr.startsWith('/css2')) {
+    // Google Fonts 请求
+    url = `https://fonts.googleapis.com${pathStr}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
+  } else if (pathStr === '/gtm.js') {
+    // Google Tag Manager 请求
+    url = `https://www.googletagmanager.com${pathStr}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
+  } else {
+    // Midjourney 请求
+    url = `https://www.midjourney.com${pathStr}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
+  }
+  
+  logger.info(`[Debug] 请求进入 handleResourceRequest: ${pathStr}`, {
     originalUrl: req.originalUrl,
     baseUrl: req.baseUrl,
-    path: req.path,
+    path: pathStr,
     url: req.url,
     method: req.method,
-    headers: req.headers
+    headers: req.headers,
+    targetUrl: url
   });
-
-  // 处理 API 请求
-  if (req.path.startsWith('/api/')) {
-    logger.info(`[API] 处理 API 请求: ${req.path}`);
-    // 转发到 API 路由处理
-    return apiRoutes(req, res, () => {});
-  }
-  
-  // 处理 Google Fonts 请求
-  if (req.path.startsWith('/css2')) {
-    url = `https://fonts.googleapis.com${req.path}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
-  }
-  
-  // 处理 Google Tag Manager 请求
-  if (req.path === '/gtm.js') {
-    url = `https://www.googletagmanager.com${req.path}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
-  }
-  
-  // 处理 CDN 资源请求
-  if (req.path.startsWith('/cdn-cgi/') || req.path.startsWith('/4a41d126-') || req.path.startsWith('/8140f81c-') || req.path.startsWith('/be5f45c4-') || req.path.startsWith('/54ff92c3-') || req.path.startsWith('/f1cd8ce1-') || req.path.startsWith('/04a7e85a-') || req.path.startsWith('/669cc353-') || req.path.startsWith('/6429bfda-') || req.path.startsWith('/6c2b1b72-') || req.path.startsWith('/d3a4b904-') || req.path.startsWith('/918df861-') || req.path.startsWith('/231b1ef0-')) {
-    url = `https://cdn.midjourney.com${req.path}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
-    
-    // 添加必要的请求头
-    const headers = new Headers();
-    headers.append('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-    headers.append('Referer', 'https://www.midjourney.com/');
-    headers.append('Origin', 'https://www.midjourney.com');
-    
-    try {
-      const response = await fetch(url, { headers });
-      if (!response.ok) {
-        throw new Error(`CDN request failed: ${response.status} ${response.statusText}`);
-      }
-      
-      const buffer = await response.arrayBuffer();
-      const contentType = response.headers.get('content-type') || 'image/webp';
-      
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Cache-Control', 'public, max-age=31536000');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.send(Buffer.from(buffer));
-      return;
-    } catch (error: any) {
-      logger.error(`[CDN] 资源获取失败: ${url}`, { error: error.message });
-      res.status(500).send('Error loading CDN resource');
-      return;
-    }
-  }
 
   logger.info(`[Proxy] 开始处理请求: ${url}`);
   
   try {
     // 判断资源类型
-    const ext = path.extname(req.path).toLowerCase();
-    const isStaticResource = /\.(js|css|json|png|jpg|jpeg|gif|svg|woff|woff2|ttf)$/i.test(req.path);
-    const isNextJsResource = req.path.startsWith('/_next/static/');
+    const ext = path.extname(pathStr).toLowerCase();
+    const isStaticResource = /\.(js|css|json|png|jpg|jpeg|gif|svg|woff|woff2|ttf)$/i.test(pathStr);
+    const isNextJsResource = pathStr.startsWith('/_next/static/');
     const isHtmlPage = !isStaticResource && !isNextJsResource;
-    const isCloudflareScript = req.path.startsWith('/cdn-cgi/challenge-platform/')
-                            && req.path.endsWith('.js');
-    const isApiRequest = req.path.startsWith('/api/');
-    const isCdnResource = req.path.startsWith('/cdn-cgi/') || req.path.startsWith('/4a41d126-') || req.path.startsWith('/8140f81c-') || req.path.startsWith('/be5f45c4-');
+    const isCloudflareScript = pathStr.startsWith('/cdn-cgi/challenge-platform/') && pathStr.endsWith('.js');
+    const isApiRequest = pathStr.startsWith('/api/');
     
-    logger.info(`[Resource] 资源类型: ${ext}, 是否HTML页面: ${isHtmlPage}, 是否静态资源: ${isStaticResource}, 是否Next.js资源: ${isNextJsResource}, 是否Cloudflare脚本: ${isCloudflareScript}, 是否API请求: ${isApiRequest}, 是否CDN资源: ${isCdnResource}, 路径: ${req.path}`);
+    logger.info(`[Resource] 资源类型: ${ext}, 是否HTML页面: ${isHtmlPage}, 是否静态资源: ${isStaticResource}, 是否Next.js资源: ${isNextJsResource}, 是否Cloudflare脚本: ${isCloudflareScript}, 是否API请求: ${isApiRequest}, 路径: ${pathStr}`);
 
     // 检查缓存
     const cachedResource = resourceCache.get(url);
@@ -170,10 +146,8 @@ async function handleResourceRequest(req: express.Request, res: express.Response
     const result = await fetchHandler({
       url,
       timeout: 30000,
-      waitUntil: 'networkidle',
       extractContent: false,
-      returnHtml: isHtmlPage,
-      waitForNavigation: true,
+      returnHtml: true,
       disableMedia: false
     });
 
@@ -186,34 +160,195 @@ async function handleResourceRequest(req: express.Request, res: express.Response
     
     // 如果是 JavaScript 文件，重写 API 请求 URL
     if (ext === '.js') {
-      // 重写完整的 API 请求 URL
+      logger.info(`[JS] 开始处理 JavaScript 文件: ${pathStr}`);
+      
+      // 1. 重写完整的 API URL（包括带引号和不带引号的）
       content = content.replace(
-        /(https?:\/\/www\.midjourney\.com\/api\/[^"'\s)]*)/g,
+        /https?:\/\/(?:www\.|proxima\.)?midjourney\.com\/api\/[^"'\s)]+/g,
         (match) => {
-          const newUrl = match.replace('https://www.midjourney.com/api/', 'http://localhost:3000/api/');
+          // 如果 URL 已经包含 localhost:3000，不要再重写
+          if (match.includes('localhost:3000')) {
+            return match;
+          }
+          const apiPath = '/api/' + match.split('/api/')[1];
+          const newUrl = `http://localhost:3000${apiPath}`;
           logger.info(`[JS] 重写完整 URL: ${match} -> ${newUrl}`);
           return newUrl;
         }
       );
-      // 重写相对路径的 API 请求
+
+      // 2. 重写相对路径的 API 请求（支持更多引号类型）
       content = content.replace(
-        /(fetch|axios\.get|axios\.post|axios\.put|axios\.delete)\s*\(\s*['"]\/api\//g,
-        '$1("http://localhost:3000/api/'
-      );
-      // 额外处理字符串中的完整 URL
-      content = content.replace(
-        /['"](https?:\/\/www\.midjourney\.com\/api\/[^'"]+)['"]/g,
-        (match, url) => {
-          const newUrl = url.replace('https://www.midjourney.com/api/', 'http://localhost:3000/api/');
-          logger.info(`[JS] 重写字符串中的 URL: ${url} -> ${newUrl}`);
-          return `"${newUrl}"`;
+        /(['"`])(?:https?:\/\/(?:www\.|proxima\.)?midjourney\.com)?\/api\//g,
+        (match, quote) => {
+          // 如果已经包含 localhost:3000，不要再重写
+          if (match.includes('localhost:3000')) {
+            return match;
+          }
+          return `${quote}http://localhost:3000/api/`;
         }
       );
-      logger.info(`[JS] 重写 JavaScript 文件中的 API 请求 URL: ${req.path}`);
+
+      // 3. 重写 URL 构造（支持更多参数形式）
+      content = content.replace(
+        /new\s+URL\s*\(\s*(['"`])((?:https?:\/\/(?:www\.|proxima\.)?midjourney\.com)?\/api\/[^'"`]+)\1/g,
+        (match, quote, path) => {
+          // 如果已经包含 localhost:3000，不要再重写
+          if (match.includes('localhost:3000')) {
+            return match;
+          }
+          const apiPath = path.includes('/api/') ? '/api/' + path.split('/api/')[1] : path;
+          return `new URL(${quote}http://localhost:3000${apiPath}${quote}`;
+        }
+      );
+
+      // 4. 重写 window.location（支持更多方法）
+      content = content.replace(
+        /window\.location(?:\.href\s*=|\.replace\s*\(\s*|\.assign\s*\(\s*|\.href\.includes\s*\(\s*)(['"`])((?:https?:\/\/(?:www\.|proxima\.)?midjourney\.com)?\/api\/[^'"`]+)\1/g,
+        (_, quote, path) => {
+          const apiPath = path.includes('/api/') ? path.split('/api/')[1] : path;
+          return `window.location.href = ${quote}http://localhost:3000/api/${apiPath}${quote}`;
+        }
+      );
+
+      // 5. 重写 fetch 调用（支持更多参数形式）
+      content = content.replace(
+        /fetch\s*\(\s*(['"`])((?:https?:\/\/(?:www\.|proxima\.)?midjourney\.com)?\/api\/[^'"`]+)\1/g,
+        (_, quote, path) => {
+          const apiPath = path.includes('/api/') ? path.split('/api/')[1] : path;
+          return `fetch(${quote}http://localhost:3000/api/${apiPath}${quote}`;
+        }
+      );
+
+      // 6. 重写 axios 调用（支持更多方法和参数形式）
+      content = content.replace(
+        /axios(?:\[['"`](get|post|put|delete|patch)['"`]\]|\.(get|post|put|delete|patch))\s*\(\s*(['"`])((?:https?:\/\/(?:www\.|proxima\.)?midjourney\.com)?\/api\/[^'"`]+)\3/g,
+        (_, method1, method2, quote, path) => {
+          const method = method1 || method2;
+          const apiPath = path.includes('/api/') ? path.split('/api/')[1] : path;
+          return `axios.${method}(${quote}http://localhost:3000/api/${apiPath}${quote}`;
+        }
+      );
+
+      // 7. 重写 jQuery 调用（支持更多方法和参数形式）
+      content = content.replace(
+        /\$\.(?:(get|post|ajax)\s*\(\s*|ajax\s*\(\s*\{\s*url\s*:\s*)(['"`])((?:https?:\/\/(?:www\.|proxima\.)?midjourney\.com)?\/api\/[^'"`]+)\2/g,
+        (_, method, quote, path) => {
+          const apiPath = path.includes('/api/') ? path.split('/api/')[1] : path;
+          return method ? 
+            `$.${method}(${quote}http://localhost:3000/api/${apiPath}${quote}` :
+            `$.ajax({ url: ${quote}http://localhost:3000/api/${apiPath}${quote}`;
+        }
+      );
+
+      // 8. 添加增强版的请求拦截器
+      const interceptorCode = `
+        // Midjourney API 请求拦截器
+        (function() {
+          // 保存原始的请求方法
+          const origFetch = window.fetch;
+          const origXHR = window.XMLHttpRequest;
+          
+          // 辅助函数：检查和重写 URL
+          function rewriteApiUrl(url) {
+            try {
+              if (url.includes('/api/') || url.includes('midjourney.com/api/')) {
+                const urlObj = new URL(url, window.location.origin);
+                const apiPath = urlObj.pathname + urlObj.search;
+                return 'http://localhost:3000' + apiPath;
+              }
+            } catch (e) {
+              console.error('[Interceptor] URL 重写错误:', e);
+            }
+            return url;
+          }
+          
+          // 辅助函数：添加必要的请求头
+          function addRequiredHeaders(headers = {}) {
+            return {
+              ...headers,
+              'Origin': 'http://localhost:3000',
+              'Referer': 'http://localhost:3000/',
+              'Accept': '*/*',
+              'Accept-Language': 'zh-CN,zh;q=0.9',
+              'sec-fetch-dest': 'empty',
+              'sec-fetch-mode': 'cors',
+              'sec-fetch-site': 'same-origin',
+              'x-csrf-protection': '1'
+            };
+          }
+          
+          // 重写 fetch
+          window.fetch = function(input, init = {}) {
+            let url = typeof input === 'string' ? input : input.url;
+            const newUrl = rewriteApiUrl(url);
+            
+            if (newUrl !== url) {
+              console.log('[Interceptor] 重写 fetch 请求:', url, '->', newUrl);
+              input = typeof input === 'string' ? newUrl : new Request(newUrl, input);
+              init.headers = addRequiredHeaders(init.headers);
+              init.credentials = 'include';
+            }
+            
+            return origFetch.call(this, input, init);
+          };
+          
+          // 重写 XMLHttpRequest
+          window.XMLHttpRequest = function() {
+            const xhr = new origXHR();
+            const origOpen = xhr.open;
+            
+            xhr.open = function(method, url, ...args) {
+              const newUrl = rewriteApiUrl(url);
+              
+              if (newUrl !== url) {
+                console.log('[Interceptor] 重写 XHR 请求:', url, '->', newUrl);
+                xhr.addEventListener('readystatechange', () => {
+                  if (xhr.readyState === 1) {
+                    Object.entries(addRequiredHeaders()).forEach(([key, value]) => {
+                      xhr.setRequestHeader(key, value);
+                    });
+                  }
+                });
+                url = newUrl;
+              }
+              
+              return origOpen.call(this, method, url, ...args);
+            };
+            
+            return xhr;
+          };
+          
+          // 监听动态添加的脚本
+          const observer = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+              mutation.addedNodes.forEach((node) => {
+                if (node.tagName === 'SCRIPT' && node.src && 
+                    (node.src.includes('/api/') || node.src.includes('midjourney.com/api/'))) {
+                  node.src = rewriteApiUrl(node.src);
+                  console.log('[Interceptor] 重写动态脚本 src:', node.src);
+                }
+              });
+            });
+          });
+          
+          observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true
+          });
+          
+          console.log('[Interceptor] API 请求拦截器已启动');
+        })();
+      `;
+
+      // 在文件开头插入拦截器代码
+      content = interceptorCode + content;
+
+      logger.info(`[JS] JavaScript 文件处理完成: ${pathStr}`);
     }
     
     // 如果是静态资源、CDN资源或 Cloudflare 脚本，直接使用原始内容
-    if (isStaticResource || isNextJsResource || isCloudflareScript || isCdnResource) {
+    if (isStaticResource || isNextJsResource || isCloudflareScript) {
       // 设置正确的 Content-Type 和缓存控制
       let contentType = 'text/plain';
       let cacheControl = 'public, max-age=31536000';
@@ -295,7 +430,7 @@ async function handleResourceRequest(req: express.Request, res: express.Response
     res.send(content);
   } catch (error: any) {
     const processingTime = Date.now() - startTime;
-    logger.error(`[Error] 资源代理失败: ${req.path}`, { 
+    logger.error(`[Error] 资源代理失败: ${pathStr}`, { 
       error: error.message, 
       stack: error.stack,
       processingTime 
@@ -333,21 +468,26 @@ export function createServer() {
   // 处理 OPTIONS 请求 - 放在最前面
   app.options('*', (req, res, next) => {
     logger.info(`[CORS] 处理预检请求: ${req.method} ${req.path}`);
-    corsMiddleware(req, res, next);
+    corsMiddleware.forEach(middleware => middleware(req, res, next));
   });
 
   // 添加 CORS 中间件
   app.use(corsMiddleware);
 
-  // 处理所有请求
-  app.all('*', (req, res, next) => {
-    // 如果是 API 请求，转发到 API 路由
-    if (req.path.startsWith('/api/')) {
-      logger.info(`[API] 转发 API 请求: ${req.path}`);
-      return apiRoutes(req, res, next);
-    }
-    // 否则，继续处理其他请求
-    next();
+  // 直接挂载 /api 路由（包含 GET/POST/OPTIONS 等）- 放在最前面处理所有 API 请求
+  app.use('/api', apiRoutes);
+
+  /* ------------------------------------------------------------------
+   * 自定义静态站点 (账号选择页等)
+   * public-self 目录仅存放我们自己的页面, 不应被 handleResourceRequest 抓取覆盖
+   * ------------------------------------------------------------------ */
+
+  const selfStaticDir = path.join(__dirname, '../public-self');
+  app.use(express.static(selfStaticDir));
+
+  // 根路径返回账号选择页
+  app.get('/', (_req, res) => {
+    res.sendFile(path.join(selfStaticDir, 'index.html'));
   });
 
   // 处理静态资源请求

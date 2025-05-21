@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>选择 Midjourney 账号</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif;background:#111;color:#eee;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}
+    ul{list-style:none;padding:0}
+    li{margin:12px 0}
+    a{color:#61dafb;font-size:20px;text-decoration:none}
+    a:hover{text-decoration:underline}
+  </style>
+</head>
+<body>
+  <div>
+    <h2>请选择账号</h2>
+    <ul id="list"></ul>
+  </div>
+
+<script>
+(async()=>{
+  const resp = await fetch('/api/accounts');
+  const list = await resp.json();
+  const ul = document.getElementById('list');
+  list.forEach(a=>{
+    const li=document.createElement('li');
+    const link=document.createElement('a');
+    link.textContent=a.name;
+    link.href='#';
+    link.onclick=e=>{
+      e.preventDefault();
+      document.cookie = `mj_account=${a.id}; path=/`; // 选择账号
+      location.href = '/explore';
+    };
+    li.appendChild(link);
+    ul.appendChild(li);
+  })
+})();
+</script>
+</body>
+</html> 

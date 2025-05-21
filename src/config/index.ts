@@ -25,5 +25,13 @@ export const config = {
     maxAge: 86400,
     preflightContinue: false,
     optionsSuccessStatus: 204
-  }
+  },
+  allowedOrigins: [
+    'https://www.midjourney.com',
+    'https://proxima.midjourney.com',
+    'https://cdn.midjourney.com',
+    'https://www.google.com',
+    'https://www.google.com.hk',
+    'https://www.google.com.tw',
+  ]
 }; 

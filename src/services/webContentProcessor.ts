@@ -293,6 +293,7 @@ export class WebContentProcessor {
 
     // Truncate if needed
     if (
+      this.options.maxLength !== undefined &&
       this.options.maxLength > 0 &&
       processedContent.length > this.options.maxLength
     ) {

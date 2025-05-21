@@ -1,12 +1,12 @@
 export interface FetchOptions {
-    timeout: number;
-    waitUntil: 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
-    extractContent: boolean;
-    maxLength: number;
-    returnHtml: boolean;
-    waitForNavigation: boolean;
-    navigationTimeout: number;
-    disableMedia: boolean;
+    timeout?: number;
+    waitUntil?: 'load' | 'domcontentloaded' | 'networkidle' | 'commit';
+    extractContent?: boolean;
+    maxLength?: number;
+    returnHtml?: boolean;
+    waitForNavigation?: boolean;
+    navigationTimeout?: number;
+    disableMedia?: boolean;
     debug?: boolean;
   }
   
@@ -15,4 +15,10 @@ export interface FetchOptions {
     content: string;
     error?: string;
     index?: number;
+  }
+
+  export interface AccountMeta {
+    id: string;
+    name: string;
+    cookie: string;
   }

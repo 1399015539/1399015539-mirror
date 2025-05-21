@@ -133,7 +133,13 @@ export async function fetchUrls(args: any) {
       })
     );
 
-    results.sort((a, b) => (a.index || 0) - (b.index || 0));
+    // Sort results by index if available
+    results.sort((a, b) => {
+      const indexA = (a as any).index || 0;
+      const indexB = (b as any).index || 0;
+      return indexA - indexB;
+    });
+
     const combinedResults = results
       .map(
         (result, i) =>
