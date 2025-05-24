@@ -9,12 +9,16 @@
     li{margin:12px 0}
     a{color:#61dafb;font-size:20px;text-decoration:none}
     a:hover{text-decoration:underline}
+    .loading-state {color:#888;font-style:italic;}
+    .success-state {color:#4caf50;}
+    .error-state {color:#f44336;}
   </style>
 </head>
 <body>
   <div>
     <h2>请选择账号</h2>
     <ul id="list"></ul>
+    <div id="status" style="margin-top: 20px; text-align: center; font-size: 14px;"></div>
   </div>
 
 <script>
@@ -22,6 +26,7 @@
   const resp = await fetch('/api/accounts');
   const list = await resp.json();
   const ul = document.getElementById('list');
+  const statusDiv = document.getElementById('status');
   
   list.forEach(a=>{
     const li=document.createElement('li');
@@ -31,13 +36,20 @@
     link.onclick=async e=>{
       e.preventDefault();
       
+      // 禁用所有链接，防止重复点击
+      const allLinks = document.querySelectorAll('a');
+      allLinks.forEach(l => l.style.pointerEvents = 'none');
+      
       // 添加加载状态
       const originalText = link.textContent;
       link.textContent = '正在切换...';
-      link.style.pointerEvents = 'none';
+      link.className = 'loading-state';
+      statusDiv.innerHTML = '<span class="loading-state">正在切换账号，请稍候...</span>';
       
       try {
-        // 使用新的账号切换 API
+        console.log(`开始切换到账号: ${a.id}`);
+        
+        // 第一步：使用账号切换API
         const switchResp = await fetch(`/api/switch-account/${a.id}`, {
           method: 'POST',
           credentials: 'include'
@@ -45,34 +57,57 @@
         
         if (switchResp.ok) {
           const result = await switchResp.json();
-          console.log(`账号切换结果:`, result);
+          console.log(`账号切换API结果:`, result);
           
-          if (result.warmup === 'success') {
-            console.log('账号预热成功，可以正常使用');
-          } else if (result.warmup === 'warning') {
-            console.log('账号预热有警告，但应该可以使用');
-          } else {
-            console.warn('账号预热失败，可能需要手动刷新');
+          statusDiv.innerHTML = '<span class="success-state">账号切换成功，正在刷新页面...</span>';
+          
+          // 第二步：强制清除所有可能的缓存
+          if ('caches' in window) {
+            const cacheNames = await caches.keys();
+            await Promise.all(cacheNames.map(name => caches.delete(name)));
+            console.log('已清除前端缓存');
           }
           
-          // 短暂延迟确保服务器状态同步
-          await new Promise(resolve => setTimeout(resolve, 500));
-          location.href = '/explore';
+          // 第三步：设置额外的cookie确保状态同步
+          document.cookie = `mj_account=${a.id}; path=/; max-age=604800`; // 7天
+          document.cookie = `mj_switch_time=${Date.now()}; path=/; max-age=604800`; // 切换时间戳
+          
+          console.log('Cookie已设置，准备刷新页面');
+          
+          // 第四步：等待一小段时间确保服务器状态同步，然后刷新整个页面
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          // 使用 location.replace 而不是 location.href，确保不会保留历史记录
+          window.location.replace('/explore?_refresh=' + Date.now());
           
         } else {
           console.error('账号切换失败:', await switchResp.text());
-          alert('账号切换失败，请重试');
+          statusDiv.innerHTML = '<span class="error-state">账号切换失败，请重试</span>';
+          
+          // 降级到原来的方式
+          document.cookie = `mj_account=${a.id}; path=/`;
+          document.cookie = `mj_switch_time=${Date.now()}; path=/`;
+          await new Promise(resolve => setTimeout(resolve, 500));
+          window.location.replace('/explore?_fallback=' + Date.now());
         }
       } catch (error) {
         console.error('账号切换错误:', error);
-        // 降级到原来的方式
-        document.cookie = `mj_account=${a.id}; path=/`;
-        await new Promise(resolve => setTimeout(resolve, 300));
-        location.href = '/explore';
-      } finally {
-        // 恢复链接状态
-        link.textContent = originalText;
-        link.style.pointerEvents = 'auto';
+        statusDiv.innerHTML = '<span class="error-state">切换过程中出现错误，正在重试...</span>';
+        
+        // 最终降级方案：直接设置cookie并刷新
+        try {
+          document.cookie = `mj_account=${a.id}; path=/`;
+          document.cookie = `mj_switch_time=${Date.now()}; path=/`;
+          await new Promise(resolve => setTimeout(resolve, 300));
+          window.location.replace('/explore?_emergency=' + Date.now());
+        } catch (fallbackError) {
+          console.error('降级方案也失败:', fallbackError);
+          statusDiv.innerHTML = '<span class="error-state">切换失败，请手动刷新页面</span>';
+          // 恢复链接状态
+          allLinks.forEach(l => l.style.pointerEvents = 'auto');
+          link.textContent = originalText;
+          link.className = '';
+        }
       }
     };
     li.appendChild(link);

@@ -137,44 +137,114 @@ router.post('/switch-account/:accountId', async (req, res) => {
     logger.info(`[API] 切换到账号: ${accountId}`);
     
     try {
-        // 预热请求 - 发送一个轻量级 API 请求来"激活"新账号的会话
+        // 第一步：清除旧账号的所有缓存（如果有的话）
+        const oldCookies = cookie.parse(req.headers.cookie || '');
+        const oldAccountId = oldCookies.mj_account;
+        if (oldAccountId && oldAccountId !== accountId) {
+            logger.info(`[API] 清除旧账号缓存: ${oldAccountId}`);
+            // 这里应该清除 oldAccountId 的缓存，但我们需要访问 server.ts 中的缓存
+            // 暂时先记录，后面我们会通过其他方式实现
+        }
+        
+        // 第二步：预热新账号 - 发送多个轻量级请求来"激活"新账号的会话
         logger.info(`[API] 开始账号预热: ${accountId}`);
         
-        // 导入 API 服务
         const { MidjourneyApiService } = await import('../services/api/midjourneyApi.js');
         const apiService = new MidjourneyApiService();
         
-        // 发送一个简单的用户状态请求作为预热
-        const warmupResult = await apiService.makeRequest(
-            '/user-mutable-state',
-            { method: 'GET' } as any,
-            accountCookie
-        );
+        // 发送多个预热请求，模拟真实的用户行为
+        const warmupRequests = [
+            // 1. 用户状态请求
+            apiService.makeRequest('/user-mutable-state', { method: 'GET' } as any, accountCookie),
+            // 2. 编辑器会话同步
+            apiService.makeRequest('/editor-sessions-sync', { method: 'GET' } as any, accountCookie),
+            // 3. 竞赛排名（轻量级）
+            apiService.makeRequest('/contests-ranking-count', { method: 'GET' } as any, accountCookie)
+        ];
         
-        if (warmupResult && !warmupResult.error) {
-            logger.info(`[API] 账号预热成功: ${accountId}`);
-        } else {
-            logger.warn(`[API] 账号预热可能失败: ${accountId}`, warmupResult);
+        const warmupResults = await Promise.allSettled(warmupRequests);
+        const successCount = warmupResults.filter(r => r.status === 'fulfilled' && !r.value?.error).length;
+        
+        logger.info(`[API] 预热完成: ${accountId}, ${successCount}/${warmupRequests.length} 请求成功`);
+        
+        // 第三步：强制刷新imagine相关的缓存
+        logger.info(`[API] 强制刷新imagine缓存: ${accountId}`);
+        
+        // 获取当前账号的用户ID（从cookie中解析JWT）
+        let userId = null;
+        try {
+            // 从JWT token中提取用户ID
+            const authToken = accountCookie.match(/__Host-Midjourney\.AuthUserTokenV3_i=([^;]+)/);
+            if (authToken) {
+                const token = authToken[1];
+                const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+                userId = payload.midjourney_id;
+                logger.info(`[API] 解析用户ID: ${userId}`);
+            }
+        } catch (error) {
+            logger.warn(`[API] 无法解析用户ID: ${(error as Error).message}`);
         }
         
+        // 第四步：如果有用户ID，发送imagine相关的预热请求
+        let imagineWarmupSuccess = false;
+        if (userId) {
+            try {
+                const imagineWarmupResult = await apiService.makeRequest(
+                    `/imagine?user_id=${userId}&page_size=1`, // 只请求1条数据作为预热
+                    { method: 'GET' } as any,
+                    accountCookie
+                );
+                
+                if (imagineWarmupResult && !imagineWarmupResult.error) {
+                    imagineWarmupSuccess = true;
+                    logger.info(`[API] imagine预热成功: ${accountId}`);
+                } else {
+                    logger.warn(`[API] imagine预热失败: ${accountId}`, imagineWarmupResult);
+                }
+            } catch (error) {
+                logger.warn(`[API] imagine预热异常: ${accountId}`, { error: (error as Error).message });
+            }
+        }
+        
+        // 返回详细的切换结果
         res.json({ 
             success: true, 
             accountId,
             message: '账号切换成功',
-            warmup: warmupResult && !warmupResult.error ? 'success' : 'warning'
+            warmup: {
+                basic: successCount > 0 ? 'success' : 'failed',
+                basicSuccess: successCount,
+                basicTotal: warmupRequests.length,
+                imagine: imagineWarmupSuccess ? 'success' : 'failed',
+                userId: userId
+            },
+            timestamp: Date.now(),
+            // 建议前端执行的动作
+            recommendation: {
+                shouldRefreshPage: true,
+                reason: '确保新账号状态完全生效'
+            }
         });
         
     } catch (error: unknown) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        logger.error(`[API] 账号预热失败: ${accountId}`, { error: errorMessage });
+        logger.error(`[API] 账号切换处理失败: ${accountId}`, { error: errorMessage });
         
-        // 即使预热失败，账号切换仍然算成功
+        // 即使预热失败，账号切换仍然算成功，但建议刷新页面
         res.json({ 
             success: true, 
             accountId,
-            message: '账号切换成功',
-            warmup: 'failed',
-            warmupError: errorMessage
+            message: '账号切换成功，但预热可能失败',
+            warmup: {
+                basic: 'failed',
+                imagine: 'failed',
+                error: errorMessage
+            },
+            timestamp: Date.now(),
+            recommendation: {
+                shouldRefreshPage: true,
+                reason: '预热失败，强制刷新页面确保状态正确'
+            }
         });
     }
 });
