@@ -155,6 +155,23 @@ export class BrowserService {
   public async createContext(browser: Browser): Promise<{ context: BrowserContext, viewport: {width: number, height: number} }> {
     const viewport = this.getRandomViewport();
     
+    // 合并默认 headers 和自定义 headers
+    const defaultHeaders = {
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'DNT': '1',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Cache-Control': 'max-age=0',
+    };
+    
+    const finalHeaders = { ...defaultHeaders, ...this.options.headers };
+    
     const context = await browser.newContext({
       javaScriptEnabled: true,
       ignoreHTTPSErrors: true,
@@ -167,19 +184,7 @@ export class BrowserService {
       timezoneId: 'America/New_York',
       colorScheme: 'light',
       acceptDownloads: true,
-      extraHTTPHeaders: {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0',
-      }
+      extraHTTPHeaders: finalHeaders
     });
 
     // Set up anti-detection measures

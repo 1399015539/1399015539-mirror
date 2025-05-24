@@ -4,131 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Midjourney Mirror</title>
-    <script>
-        // 在 DOM 加载前执行拦截器
-        (function() {
-            // 辅助函数：检查和重写 URL
-            function rewriteApiUrl(url) {
-                try {
-                    // 如果 URL 已经包含 localhost:3000，直接返回
-                    if (url.includes('localhost:3000')) {
-                        return url;
-                    }
-                    
-                    // 标准化 URL
-                    let urlToProcess = url;
-                    
-                    // 如果是相对路径，转换为绝对路径
-                    if (!url.startsWith('http')) {
-                        urlToProcess = new URL(url, window.location.origin).href;
-                    }
-                    
-                    // 检查是否是 API 请求
-                    if (urlToProcess.includes('/api/') || urlToProcess.includes('midjourney.com/api/')) {
-                        // 提取 API 路径部分
-                        let apiPath = '';
-                        if (urlToProcess.includes('/api/')) {
-                            apiPath = '/api/' + urlToProcess.split('/api/')[1];
-                        } else {
-                            apiPath = '/api/' + urlToProcess.split('midjourney.com/api/')[1];
-                        }
-                        
-                        // 构建新的 URL
-                        return 'http://localhost:3000' + apiPath;
-                    }
-                } catch (e) {
-                    console.error('[Interceptor] URL 重写错误:', e);
-                }
-                return url;
-            }
-            
-            // 辅助函数：添加必要的请求头
-            function addRequiredHeaders(headers = {}) {
-                return {
-                    ...headers,
-                    'Origin': 'http://localhost:3000',
-                    'Referer': 'http://localhost:3000/',
-                    'Accept': '*/*',
-                    'Accept-Language': 'zh-CN,zh;q=0.9',
-                    'sec-fetch-dest': 'empty',
-                    'sec-fetch-mode': 'cors',
-                    'sec-fetch-site': 'same-origin',
-                    'x-csrf-protection': '1'
-                };
-            }
-            
-            // 保存原始的请求方法
-            const origFetch = window.fetch;
-            const origXHR = window.XMLHttpRequest;
-            
-            // 重写 fetch
-            window.fetch = function(input, init = {}) {
-                let url = typeof input === 'string' ? input : input.url;
-                const newUrl = rewriteApiUrl(url);
-                
-                if (newUrl !== url) {
-                    console.log('[Interceptor] 重写 fetch 请求:', url, '->', newUrl);
-                    input = typeof input === 'string' ? newUrl : new Request(newUrl, input);
-                    init.headers = addRequiredHeaders(init.headers);
-                    init.credentials = 'include';
-                }
-                
-                return origFetch.call(this, input, init);
-            };
-            
-            // 重写 XMLHttpRequest
-            window.XMLHttpRequest = function() {
-                const xhr = new origXHR();
-                const origOpen = xhr.open;
-                
-                xhr.open = function(method, url, ...args) {
-                    const newUrl = rewriteApiUrl(url);
-                    
-                    if (newUrl !== url) {
-                        console.log('[Interceptor] 重写 XHR 请求:', url, '->', newUrl);
-                        xhr.addEventListener('readystatechange', () => {
-                            if (xhr.readyState === 1) {
-                                Object.entries(addRequiredHeaders()).forEach(([key, value]) => {
-                                    xhr.setRequestHeader(key, value);
-                                });
-                            }
-                        });
-                        url = newUrl;
-                    }
-                    
-                    return origOpen.call(this, method, url, ...args);
-                };
-                
-                return xhr;
-            };
-            
-            // 监听动态添加的脚本
-            const observer = new MutationObserver((mutations) => {
-                mutations.forEach((mutation) => {
-                    mutation.addedNodes.forEach((node) => {
-                        if (node.tagName === 'SCRIPT' && node.src && 
-                            (node.src.includes('/api/') || node.src.includes('midjourney.com/api/'))) {
-                            const newSrc = rewriteApiUrl(node.src);
-                            if (newSrc !== node.src) {
-                                node.src = newSrc;
-                                console.log('[Interceptor] 重写动态脚本 src:', node.src, '->', newSrc);
-                            }
-                        }
-                    });
-                });
-            });
-            
-            // 在 DOM 准备好后开始监听
-            document.addEventListener('DOMContentLoaded', () => {
-                observer.observe(document.documentElement, {
-                    childList: true,
-                    subtree: true
-                });
-            });
-            
-            console.log('[Interceptor] API 请求拦截器已启动');
-        })();
-    </script>
     <style>
         body {
             margin: 0;
@@ -182,13 +57,18 @@
     <script>
         async function fetchMidjourneyContent() {
             try {
-                const loadingElement = document.querySelector('.loading');
+                const params = new URLSearchParams({
+                    amount: '50',
+                    page: '0',
+                    feed: 'top',
+                    _ql: 'explore'
+                });
                 
-                // 使用正确的 API 路径
-                const response = await fetch('api/explore?amount=50&page=0&feed=top&_ql=explore', {
+                const response = await fetch(`/api/explore?${params.toString()}`, {
                     headers: {
-                        'Cache-Control': 'no-cache',
-                        'Pragma': 'no-cache'
+                        'Accept': '*/*',
+                        'Accept-Language': 'zh-CN,zh;q=0.9',
+                        'Cache-Control': 'no-cache'
                     }
                 });
                 

@@ -5,7 +5,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { tools, toolHandlers } from "./tools/index.js";
 import { logger } from "./utils/logger.js";
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import path from "path";
 import { fileURLToPath } from 'url';
 import NodeCache from 'node-cache';
@@ -14,6 +14,9 @@ import cors from 'cors';
 import { config } from './config/index.js';
 import { corsMiddleware } from './middlewares/corsMiddleware.js';
 import apiRoutes from './routes/apiRoutes.js';
+import { createProxyMiddleware } from 'http-proxy-middleware';
+import cookie from 'cookie';
+import { AccountManager } from './account/accountManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,6 +27,14 @@ const resourceCache = new NodeCache({
   checkperiod: 600, // 每10分钟检查一次过期缓存
   useClones: false  // 禁用克隆以提高性能
 });
+
+// 清除特定账号的所有缓存
+function clearAccountCache(accountId: string) {
+  const keys = resourceCache.keys();
+  const accountKeys = keys.filter(key => key.startsWith(`${accountId}:`));
+  accountKeys.forEach(key => resourceCache.del(key));
+  logger.info(`[Cache] 清除账号 ${accountId} 的 ${accountKeys.length} 个缓存项`);
+}
 
 // CORS 配置
 const corsOptions = {
@@ -43,38 +54,41 @@ async function handleResourceRequest(req: express.Request, res: express.Response
   // 标准化请求路径
   let pathStr = req.path;
   
-  // 如果路径中包含多个斜杠，将其规范化为单个斜杠
-  pathStr = pathStr.replace(/\/+/g, '/');
-  
-  // 移除路径中可能存在的 localhost:3000
-  pathStr = pathStr.replace(/^\/+localhost:3000/g, '');
-  
-  // 构建目标 URL
-  let url = '';
-  if (pathStr.startsWith('/api/')) {
-    // API 请求直接转发到本地
-    logger.info(`[API] 处理 API 请求: ${pathStr}`);
-    return apiRoutes(req, res, () => {});
-  } else if (pathStr.startsWith('/css2')) {
-    // Google Fonts 请求
-    url = `https://fonts.googleapis.com${pathStr}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
-  } else if (pathStr === '/gtm.js') {
-    // Google Tag Manager 请求
-    url = `https://www.googletagmanager.com${pathStr}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
-  } else {
-    // Midjourney 请求
-    url = `https://www.midjourney.com${pathStr}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
-  }
-  
   logger.info(`[Debug] 请求进入 handleResourceRequest: ${pathStr}`, {
     originalUrl: req.originalUrl,
-    baseUrl: req.baseUrl,
     path: pathStr,
-    url: req.url,
-    method: req.method,
-    headers: req.headers,
-    targetUrl: url
+    method: req.method
   });
+
+  // API 请求不应该被这个函数处理，但是作为安全措施
+  if (pathStr.startsWith('/api/')) {
+    logger.warn(`[Warning] API 请求被 handleResourceRequest 处理，这不应该发生: ${pathStr}`);
+    res.status(500).json({ error: 'API 请求路由错误' });
+    return;
+  }
+
+  // 获取用户账号和对应的登录cookie
+  let userSession = '';
+  const cookies = cookie.parse(req.headers.cookie || '');
+  const accountId = cookies.mj_account || 'guest';
+  const accountCookie = AccountManager.getCookie(accountId);
+  
+  if (accountCookie) {
+    userSession = accountCookie;
+    logger.info(`[Auth] 使用账号 ${accountId} 的cookie抓取资源`);
+  } else {
+    logger.warn(`[Auth] 账号 ${accountId} 未找到cookie，使用游客模式`);
+  }
+
+  // 构建目标 URL
+  let url = '';
+  if (pathStr.startsWith('/css2')) {
+    url = `https://fonts.googleapis.com${pathStr}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
+  } else if (pathStr === '/gtm.js') {
+    url = `https://www.googletagmanager.com${pathStr}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
+  } else {
+    url = `https://www.midjourney.com${pathStr}${req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : ''}`;
+  }
 
   logger.info(`[Proxy] 开始处理请求: ${url}`);
   
@@ -85,53 +99,61 @@ async function handleResourceRequest(req: express.Request, res: express.Response
     const isNextJsResource = pathStr.startsWith('/_next/static/');
     const isHtmlPage = !isStaticResource && !isNextJsResource;
     const isCloudflareScript = pathStr.startsWith('/cdn-cgi/challenge-platform/') && pathStr.endsWith('.js');
-    const isApiRequest = pathStr.startsWith('/api/');
     
-    logger.info(`[Resource] 资源类型: ${ext}, 是否HTML页面: ${isHtmlPage}, 是否静态资源: ${isStaticResource}, 是否Next.js资源: ${isNextJsResource}, 是否Cloudflare脚本: ${isCloudflareScript}, 是否API请求: ${isApiRequest}, 路径: ${pathStr}`);
-
     // 检查缓存
-    const cachedResource = resourceCache.get(url);
+    const cacheKey = `${accountId}:${url}`;
+    const cachedResource = resourceCache.get(cacheKey);
     if (cachedResource) {
-      logger.info(`[Cache] 命中缓存: ${url}`);
-      const processingTime = Date.now() - startTime;
-      logger.info(`[Proxy] 缓存资源处理完成: ${url}, 耗时: ${processingTime}ms`);
+      logger.info(`[Cache] 命中缓存: ${cacheKey}`);
       
       // 设置正确的 Content-Type 和缓存控制
       let contentType = 'text/plain';
-      let cacheControl = 'public, max-age=31536000';
+      let cacheControl = 'public, max-age=3600';
       
       switch (ext) {
         case '.js':
-          contentType = 'application/javascript';
-          cacheControl = 'public, max-age=86400';
+          contentType = 'application/javascript; charset=utf-8';
           break;
         case '.css':
-          contentType = 'text/css';
-          cacheControl = 'public, max-age=86400';
+          contentType = 'text/css; charset=utf-8';
           break;
         case '.json':
-          contentType = 'application/json';
-          cacheControl = 'public, max-age=3600';
+          contentType = 'application/json; charset=utf-8';
           break;
         case '.png':
+          contentType = 'image/png';
+          break;
         case '.jpg':
         case '.jpeg':
+          contentType = 'image/jpeg';
+          break;
         case '.gif':
+          contentType = 'image/gif';
+          break;
         case '.svg':
-          contentType = `image/${ext.substring(1)}`;
-          cacheControl = 'public, max-age=31536000';
+          contentType = 'image/svg+xml';
           break;
         case '.woff':
-        case '.woff2':
-        case '.ttf':
-          contentType = `font/${ext.substring(1)}`;
-          cacheControl = 'public, max-age=31536000';
+          contentType = 'font/woff';
           break;
+        case '.woff2':
+          contentType = 'font/woff2';
+          break;
+        case '.ttf':
+          contentType = 'font/ttf';
+          break;
+        default:
+          if (isHtmlPage) {
+            contentType = 'text/html; charset=utf-8';
+          }
       }
       
-      res.type(contentType);
-      res.set('Cache-Control', cacheControl);
-      res.set('ETag', `"${Buffer.from(url).toString('base64')}"`);
+      res.set({
+        'Content-Type': contentType,
+        'Cache-Control': cacheControl,
+        'X-Content-Type-Options': 'nosniff'
+      });
+      
       res.send(cachedResource);
       return;
     }
@@ -142,299 +164,148 @@ async function handleResourceRequest(req: express.Request, res: express.Response
       throw new Error('fetch_url tool not found');
     }
 
-    // 调用工具获取资源
+    // 获取资源内容
     const result = await fetchHandler({
       url,
       timeout: 30000,
       extractContent: false,
       returnHtml: true,
-      disableMedia: false
+      disableMedia: false,
+      headers: userSession ? { 'cookie': userSession } : undefined
     });
 
     if (!result.content?.[0]?.text) {
       throw new Error('获取资源失败: 内容为空');
     }
 
-    // 提取实际内容
     let content = result.content[0].text;
     
-    // 如果是 JavaScript 文件，重写 API 请求 URL
-    if (ext === '.js') {
-      logger.info(`[JS] 开始处理 JavaScript 文件: ${pathStr}`);
-      
-      // 1. 重写完整的 API URL（包括带引号和不带引号的）
-      content = content.replace(
-        /https?:\/\/(?:www\.|proxima\.)?midjourney\.com\/api\/[^"'\s)]+/g,
-        (match) => {
-          // 如果 URL 已经包含 localhost:3000，不要再重写
-          if (match.includes('localhost:3000')) {
-            return match;
-          }
-          const apiPath = '/api/' + match.split('/api/')[1];
-          const newUrl = `http://localhost:3000${apiPath}`;
-          logger.info(`[JS] 重写完整 URL: ${match} -> ${newUrl}`);
-          return newUrl;
-        }
-      );
-
-      // 2. 重写相对路径的 API 请求（支持更多引号类型）
-      content = content.replace(
-        /(['"`])(?:https?:\/\/(?:www\.|proxima\.)?midjourney\.com)?\/api\//g,
-        (match, quote) => {
-          // 如果已经包含 localhost:3000，不要再重写
-          if (match.includes('localhost:3000')) {
-            return match;
-          }
-          return `${quote}http://localhost:3000/api/`;
-        }
-      );
-
-      // 3. 重写 URL 构造（支持更多参数形式）
-      content = content.replace(
-        /new\s+URL\s*\(\s*(['"`])((?:https?:\/\/(?:www\.|proxima\.)?midjourney\.com)?\/api\/[^'"`]+)\1/g,
-        (match, quote, path) => {
-          // 如果已经包含 localhost:3000，不要再重写
-          if (match.includes('localhost:3000')) {
-            return match;
-          }
-          const apiPath = path.includes('/api/') ? '/api/' + path.split('/api/')[1] : path;
-          return `new URL(${quote}http://localhost:3000${apiPath}${quote}`;
-        }
-      );
-
-      // 4. 重写 window.location（支持更多方法）
-      content = content.replace(
-        /window\.location(?:\.href\s*=|\.replace\s*\(\s*|\.assign\s*\(\s*|\.href\.includes\s*\(\s*)(['"`])((?:https?:\/\/(?:www\.|proxima\.)?midjourney\.com)?\/api\/[^'"`]+)\1/g,
-        (_, quote, path) => {
-          const apiPath = path.includes('/api/') ? path.split('/api/')[1] : path;
-          return `window.location.href = ${quote}http://localhost:3000/api/${apiPath}${quote}`;
-        }
-      );
-
-      // 5. 重写 fetch 调用（支持更多参数形式）
-      content = content.replace(
-        /fetch\s*\(\s*(['"`])((?:https?:\/\/(?:www\.|proxima\.)?midjourney\.com)?\/api\/[^'"`]+)\1/g,
-        (_, quote, path) => {
-          const apiPath = path.includes('/api/') ? path.split('/api/')[1] : path;
-          return `fetch(${quote}http://localhost:3000/api/${apiPath}${quote}`;
-        }
-      );
-
-      // 6. 重写 axios 调用（支持更多方法和参数形式）
-      content = content.replace(
-        /axios(?:\[['"`](get|post|put|delete|patch)['"`]\]|\.(get|post|put|delete|patch))\s*\(\s*(['"`])((?:https?:\/\/(?:www\.|proxima\.)?midjourney\.com)?\/api\/[^'"`]+)\3/g,
-        (_, method1, method2, quote, path) => {
-          const method = method1 || method2;
-          const apiPath = path.includes('/api/') ? path.split('/api/')[1] : path;
-          return `axios.${method}(${quote}http://localhost:3000/api/${apiPath}${quote}`;
-        }
-      );
-
-      // 7. 重写 jQuery 调用（支持更多方法和参数形式）
-      content = content.replace(
-        /\$\.(?:(get|post|ajax)\s*\(\s*|ajax\s*\(\s*\{\s*url\s*:\s*)(['"`])((?:https?:\/\/(?:www\.|proxima\.)?midjourney\.com)?\/api\/[^'"`]+)\2/g,
-        (_, method, quote, path) => {
-          const apiPath = path.includes('/api/') ? path.split('/api/')[1] : path;
-          return method ? 
-            `$.${method}(${quote}http://localhost:3000/api/${apiPath}${quote}` :
-            `$.ajax({ url: ${quote}http://localhost:3000/api/${apiPath}${quote}`;
-        }
-      );
-
-      // 8. 添加增强版的请求拦截器
-      const interceptorCode = `
-        // Midjourney API 请求拦截器
-        (function() {
-          // 保存原始的请求方法
-          const origFetch = window.fetch;
-          const origXHR = window.XMLHttpRequest;
-          
-          // 辅助函数：检查和重写 URL
-          function rewriteApiUrl(url) {
-            try {
-              if (url.includes('/api/') || url.includes('midjourney.com/api/')) {
-                const urlObj = new URL(url, window.location.origin);
-                const apiPath = urlObj.pathname + urlObj.search;
-                return 'http://localhost:3000' + apiPath;
-              }
-            } catch (e) {
-              console.error('[Interceptor] URL 重写错误:', e);
-            }
-            return url;
-          }
-          
-          // 辅助函数：添加必要的请求头
-          function addRequiredHeaders(headers = {}) {
-            return {
-              ...headers,
-              'Origin': 'http://localhost:3000',
-              'Referer': 'http://localhost:3000/',
-              'Accept': '*/*',
-              'Accept-Language': 'zh-CN,zh;q=0.9',
-              'sec-fetch-dest': 'empty',
-              'sec-fetch-mode': 'cors',
-              'sec-fetch-site': 'same-origin',
-              'x-csrf-protection': '1'
-            };
-          }
-          
-          // 重写 fetch
-          window.fetch = function(input, init = {}) {
-            let url = typeof input === 'string' ? input : input.url;
-            const newUrl = rewriteApiUrl(url);
-            
-            if (newUrl !== url) {
-              console.log('[Interceptor] 重写 fetch 请求:', url, '->', newUrl);
-              input = typeof input === 'string' ? newUrl : new Request(newUrl, input);
-              init.headers = addRequiredHeaders(init.headers);
-              init.credentials = 'include';
-            }
-            
-            return origFetch.call(this, input, init);
-          };
-          
-          // 重写 XMLHttpRequest
-          window.XMLHttpRequest = function() {
-            const xhr = new origXHR();
-            const origOpen = xhr.open;
-            
-            xhr.open = function(method, url, ...args) {
-              const newUrl = rewriteApiUrl(url);
-              
-              if (newUrl !== url) {
-                console.log('[Interceptor] 重写 XHR 请求:', url, '->', newUrl);
-                xhr.addEventListener('readystatechange', () => {
-                  if (xhr.readyState === 1) {
-                    Object.entries(addRequiredHeaders()).forEach(([key, value]) => {
-                      xhr.setRequestHeader(key, value);
-                    });
-                  }
-                });
-                url = newUrl;
-              }
-              
-              return origOpen.call(this, method, url, ...args);
-            };
-            
-            return xhr;
-          };
-          
-          // 监听动态添加的脚本
-          const observer = new MutationObserver((mutations) => {
-            mutations.forEach((mutation) => {
-              mutation.addedNodes.forEach((node) => {
-                if (node.tagName === 'SCRIPT' && node.src && 
-                    (node.src.includes('/api/') || node.src.includes('midjourney.com/api/'))) {
-                  node.src = rewriteApiUrl(node.src);
-                  console.log('[Interceptor] 重写动态脚本 src:', node.src);
-                }
-              });
-            });
-          });
-          
-          observer.observe(document.documentElement, {
-            childList: true,
-            subtree: true
-          });
-          
-          console.log('[Interceptor] API 请求拦截器已启动');
-        })();
-      `;
-
-      // 在文件开头插入拦截器代码
-      content = interceptorCode + content;
-
-      logger.info(`[JS] JavaScript 文件处理完成: ${pathStr}`);
-    }
-    
-    // 如果是静态资源、CDN资源或 Cloudflare 脚本，直接使用原始内容
-    if (isStaticResource || isNextJsResource || isCloudflareScript) {
-      // 设置正确的 Content-Type 和缓存控制
-      let contentType = 'text/plain';
-      let cacheControl = 'public, max-age=31536000';
-      
-      switch (ext) {
-        case '.js':
-          contentType = 'application/javascript';
-          cacheControl = 'public, max-age=86400';
-          break;
-        case '.css':
-          contentType = 'text/css';
-          cacheControl = 'public, max-age=86400';
-          break;
-        case '.json':
-          contentType = 'application/json';
-          cacheControl = 'public, max-age=3600';
-          break;
-        case '.png':
-        case '.jpg':
-        case '.jpeg':
-        case '.gif':
-        case '.svg':
-          contentType = `image/${ext.substring(1)}`;
-          cacheControl = 'public, max-age=31536000';
-          break;
-        case '.woff':
-        case '.woff2':
-        case '.ttf':
-          contentType = `font/${ext.substring(1)}`;
-          cacheControl = 'public, max-age=31536000';
-          break;
-      }
-
-      // 如果是 Cloudflare 脚本，记录详细日志
-      if (isCloudflareScript) {
-        logger.info(`[Cloudflare] 处理脚本内容: ${url}`, {
-          contentLength: content.length,
-          firstChars: content.substring(0, 100)
-        });
-      }
-
-      // 缓存静态资源
-      resourceCache.set(url, content);
-      
-      // 设置响应头
-      res.type(contentType);
-      res.set('Cache-Control', cacheControl);
-      res.set('ETag', `"${Buffer.from(url).toString('base64')}"`);
-      
-      const processingTime = Date.now() - startTime;
-      logger.info(`[Proxy] 请求处理完成: ${url}, 耗时: ${processingTime}ms`);
-      
-      res.send(content);
-      return;
-    }
-
-    // 处理 HTML 内容
+    // 处理 HTML 页面
     if (isHtmlPage) {
-      // 设置响应头
-      res.type('text/html');
-      res.set('Cache-Control', 'public, max-age=3600');
-      res.set('ETag', `"${Buffer.from(url).toString('base64')}"`);
+      logger.info(`[HTML] 处理 HTML 页面: ${pathStr}`);
       
-      const processingTime = Date.now() - startTime;
-      logger.info(`[Proxy] 请求处理完成: ${url}, 耗时: ${processingTime}ms`);
+      // 移除可能阻止脚本执行的内联 CSP
+      content = content.replace(/<meta[^>]*http-equiv=["']?Content-Security-Policy["']?[^>]*>/gi, '');
       
-      res.send(content);
-      return;
-    }
+      // 在 <head> 开始标签后注入拦截器
+      const interceptorCode = `
+        <script>
+          (function() {
+            console.log('[Interceptor] 初始化');
 
-    // 其他情况
-    res.type('text/plain');
-    res.set('Cache-Control', 'public, max-age=3600');
-    res.set('ETag', `"${Buffer.from(url).toString('base64')}"`);
+            // ----------------- URL 重写工具 -----------------
+            function rewriteUrl(raw) {
+              try {
+                // 只重写指向 www.midjourney.com 的请求
+                return raw
+                  .replace(/^https?:\/\/(?:www\.)?midjourney\.com/, 'http://localhost:3000');
+              } catch (_) { return raw; }
+            }
+            // -------------------------------------------------
+
+            // 保存原始 fetch / XHR
+            const _fetch = window.fetch;
+            const _XHR = window.XMLHttpRequest;
+
+            // fetch 拦截
+            window.fetch = function(input, init = {}) {
+              let url = typeof input === 'string' ? input : (input instanceof Request ? input.url : '');
+              const newUrl = rewriteUrl(url);
+              if (newUrl !== url) {
+                console.log('[Interceptor] fetch', url, '->', newUrl);
+                input = typeof input === 'string' ? newUrl : new Request(newUrl, input);
+              }
+              return _fetch.call(this, input, { ...init, credentials: 'include' });
+            };
+
+            // XHR 拦截
+            window.XMLHttpRequest = class extends _XHR {
+              open(method, url, ...args) {
+                const newUrl = rewriteUrl(url);
+                if (newUrl !== url) {
+                  console.log('[Interceptor] XHR', url, '->', newUrl);
+                  url = newUrl;
+                }
+                return super.open(method, url, ...args);
+              }
+            };
+          })();
+        </script>
+      `;
+      
+      // 在 <head> 标签后注入拦截器代码
+      // content = content.replace(/<head>/, '<head>' + interceptorCode);
+    }
     
-    const processingTime = Date.now() - startTime;
-    logger.info(`[Proxy] 请求处理完成: ${url}, 耗时: ${processingTime}ms`);
+    // 处理 JavaScript 文件 —— 直接替换域名，提高命中率
+    if (ext === '.js') {
+      const beforeLen = content.length;
+
+      // 子域保持路径前缀，其他全部指向根
+      content = content
+        .replace(/https?:\/\/(?:www\.)?midjourney\.com/gi, 'http://localhost:3000');
+
+      const afterLen = content.length;
+      if (afterLen !== beforeLen) {
+        logger.info(`[JS] 已替换域名 → ${pathStr}`);
+      }
+    }
+    
+    // 缓存并返回资源
+    resourceCache.set(cacheKey, content);
+    
+    // 设置正确的 Content-Type 和缓存控制
+    let contentType = 'text/plain';
+    let cacheControl = 'public, max-age=3600';
+    
+    switch (ext) {
+      case '.js':
+        contentType = 'application/javascript; charset=utf-8';
+        break;
+      case '.css':
+        contentType = 'text/css; charset=utf-8';
+        break;
+      case '.json':
+        contentType = 'application/json; charset=utf-8';
+        break;
+      case '.png':
+        contentType = 'image/png';
+        break;
+      case '.jpg':
+      case '.jpeg':
+        contentType = 'image/jpeg';
+        break;
+      case '.gif':
+        contentType = 'image/gif';
+        break;
+      case '.svg':
+        contentType = 'image/svg+xml';
+        break;
+      case '.woff':
+        contentType = 'font/woff';
+        break;
+      case '.woff2':
+        contentType = 'font/woff2';
+        break;
+      case '.ttf':
+        contentType = 'font/ttf';
+        break;
+      default:
+        if (isHtmlPage) {
+          contentType = 'text/html; charset=utf-8';
+        }
+    }
+    
+    res.set({
+      'Content-Type': contentType,
+      'Cache-Control': cacheControl,
+      'X-Content-Type-Options': 'nosniff'
+    });
     
     res.send(content);
+    
   } catch (error: any) {
-    const processingTime = Date.now() - startTime;
-    logger.error(`[Error] 资源代理失败: ${pathStr}`, { 
-      error: error.message, 
-      stack: error.stack,
-      processingTime 
-    });
+    logger.error(`[Error] 资源代理失败: ${pathStr}`, { error: error.message });
     res.status(500).send('Error loading resource');
   }
 }
@@ -474,8 +345,32 @@ export function createServer() {
   // 添加 CORS 中间件
   app.use(corsMiddleware);
 
+  // 解析请求体，支持 JSON 和表单请求
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+
   // 直接挂载 /api 路由（包含 GET/POST/OPTIONS 等）- 放在最前面处理所有 API 请求
-  app.use('/api', apiRoutes);
+  app.use(
+    '/api',
+    (req: Request, res: Response, next: NextFunction) => {
+      // 标准化请求路径
+      req.url = req.url.replace(/^\/+/, '/');
+      
+      // 移除任何可能的 localhost:3000 引用
+      req.url = req.url.replace(/(?:https?:\/\/)?localhost:3000/g, '');
+      
+      // 移除重复的 /api/
+      req.url = req.url.replace(/\/api\/+api\//g, '/api/');
+      
+      // 移除路径中的重复斜杠
+      req.url = req.url.replace(/\/+/g, '/');
+      
+      const targetUrl = `https://www.midjourney.com${req.url}`;
+      logger.info(`代理 API 请求: ${req.method} ${req.url} -> ${targetUrl}`);
+      next();
+    },
+    apiRoutes
+  );
 
   /* ------------------------------------------------------------------
    * 自定义静态站点 (账号选择页等)

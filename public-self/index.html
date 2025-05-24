@@ -22,15 +22,58 @@
   const resp = await fetch('/api/accounts');
   const list = await resp.json();
   const ul = document.getElementById('list');
+  
   list.forEach(a=>{
     const li=document.createElement('li');
     const link=document.createElement('a');
     link.textContent=a.name;
     link.href='#';
-    link.onclick=e=>{
+    link.onclick=async e=>{
       e.preventDefault();
-      document.cookie = `mj_account=${a.id}; path=/`; // 选择账号
-      location.href = '/explore';
+      
+      // 添加加载状态
+      const originalText = link.textContent;
+      link.textContent = '正在切换...';
+      link.style.pointerEvents = 'none';
+      
+      try {
+        // 使用新的账号切换 API
+        const switchResp = await fetch(`/api/switch-account/${a.id}`, {
+          method: 'POST',
+          credentials: 'include'
+        });
+        
+        if (switchResp.ok) {
+          const result = await switchResp.json();
+          console.log(`账号切换结果:`, result);
+          
+          if (result.warmup === 'success') {
+            console.log('账号预热成功，可以正常使用');
+          } else if (result.warmup === 'warning') {
+            console.log('账号预热有警告，但应该可以使用');
+          } else {
+            console.warn('账号预热失败，可能需要手动刷新');
+          }
+          
+          // 短暂延迟确保服务器状态同步
+          await new Promise(resolve => setTimeout(resolve, 500));
+          location.href = '/explore';
+          
+        } else {
+          console.error('账号切换失败:', await switchResp.text());
+          alert('账号切换失败，请重试');
+        }
+      } catch (error) {
+        console.error('账号切换错误:', error);
+        // 降级到原来的方式
+        document.cookie = `mj_account=${a.id}; path=/`;
+        await new Promise(resolve => setTimeout(resolve, 300));
+        location.href = '/explore';
+      } finally {
+        // 恢复链接状态
+        link.textContent = originalText;
+        link.style.pointerEvents = 'auto';
+      }
     };
     li.appendChild(link);
     ul.appendChild(li);

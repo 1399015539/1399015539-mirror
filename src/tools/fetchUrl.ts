@@ -57,6 +57,11 @@ export const fetchUrlTool = {
         description:
           "Whether to disable media resources (images, stylesheets, fonts, media), default is true",
       },
+      headers: {
+        type: "object",
+        description:
+          "Custom HTTP headers to send with the request",
+      },
       debug: {
         type: "boolean",
         description:
@@ -91,6 +96,7 @@ export async function fetchUrl(args: any) {
     waitForNavigation: args?.waitForNavigation === true,
     navigationTimeout: Number(args?.navigationTimeout) || 10000,
     disableMedia: args?.disableMedia !== false,
+    headers: args?.headers || {},
     debug: args?.debug,
   };
 

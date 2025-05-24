@@ -1,41 +1,49 @@
-import cors from 'cors';
 import { Request, Response, NextFunction } from 'express';
-import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
 
-// 移除 Set-Cookie 响应头的中间件
-const removeSetCookieHeader = (req: Request, res: Response, next: NextFunction) => {
-  res.removeHeader('set-cookie');
-  next();
-};
-
 export const corsMiddleware = [
-  cors({
-    origin: (origin, callback) => {
-      const allowedOrigins = config.allowedOrigins || ['http://localhost:3000'];
-      
-      if (!origin || allowedOrigins.includes(origin)) {
-        logger.info(`[CORS] 允许请求来源: ${origin || 'localhost'}`);
-        callback(null, true);
-      } else {
-        logger.warn(`[CORS] 拒绝请求来源: ${origin}`);
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Accept',
-      'Cookie'
-    ],
-    exposedHeaders: [
-      'Content-Type',
-      'Content-Length'
-    ],
-    maxAge: 3600,
-    preflightContinue: false,
-    optionsSuccessStatus: 204
-  }),
-  removeSetCookieHeader
+    (req: Request, res: Response, next: NextFunction) => {
+        const origin = req.headers.origin || 'http://localhost:3000';
+        
+        // 允许的域名
+        const allowedOrigins = [
+            'http://localhost:3000',
+            'http://127.0.0.1:3000'
+        ];
+
+        if (allowedOrigins.includes(origin)) {
+            res.setHeader('Access-Control-Allow-Origin', origin);
+            logger.info('[CORS] 允许请求来源:', origin);
+        } else {
+            logger.warn('[CORS] 拒绝请求来源:', origin);
+            return res.status(403).json({ error: 'Not allowed by CORS' });
+        }
+
+        // 允许凭证
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+        
+        // 允许的请求头
+        res.setHeader('Access-Control-Allow-Headers', [
+            'Content-Type',
+            'Authorization',
+            'X-Requested-With',
+            'Accept',
+            'Origin',
+            'Cookie',
+            'x-csrf-protection'
+        ].join(', '));
+
+        // 允许的请求方法
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
+        
+        // 缓存预检请求结果
+        res.setHeader('Access-Control-Max-Age', '86400');
+
+        // 处理预检请求
+        if (req.method === 'OPTIONS') {
+            return res.status(204).end();
+        }
+
+        next();
+    }
 ]; 

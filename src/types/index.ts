@@ -8,6 +8,7 @@ export interface FetchOptions {
     navigationTimeout?: number;
     disableMedia?: boolean;
     debug?: boolean;
+    headers?: Record<string, string>;
   }
   
   export interface FetchResult {

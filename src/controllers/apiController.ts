@@ -15,14 +15,13 @@ export class ApiController {
       logger.info('[Controller] 处理 explore 请求', {
         query: req.query,
         path: req.path,
-        url: req.url
+        session: req.session ? '(cookie已设置)' : '(无cookie)'
       });
       
-      const { amount = '50', page = '0', feed = 'top' } = req.query;
-      
+      const { amount = '50', page = '0', feed = 'top_week' } = req.query;
       const data = await this.apiService.getExplore(
-        Number(amount), 
-        Number(page), 
+        Number(amount),
+        Number(page),
         String(feed),
         req.session
       );
@@ -36,7 +35,9 @@ export class ApiController {
 
   async getModelRatings(req: Request, res: Response) {
     try {
-      logger.info('[Controller] 处理 model_ratings 请求');
+      logger.info('[Controller] 处理 model_ratings 请求', {
+        session: req.session ? '(cookie已设置)' : '(无cookie)'
+      });
       const data = await this.apiService.getModelRatings(req.session);
       res.json(data);
     } catch (error) {
@@ -47,7 +48,9 @@ export class ApiController {
 
   async getContestRanking(req: Request, res: Response) {
     try {
-      logger.info('[Controller] 处理 contest_ranking 请求');
+      logger.info('[Controller] 处理 contest_ranking 请求', {
+        session: req.session ? '(cookie已设置)' : '(无cookie)'
+      });
       const data = await this.apiService.getContestRanking(req.session);
       res.json(data);
     } catch (error) {
@@ -56,32 +59,23 @@ export class ApiController {
     }
   }
 
-  // 通配代理：兜底转发未显式声明的接口
   async proxyAny(req: Request, res: Response) {
     try {
-      // 标准化 API 路径
-      let apiPath = req.url;
+      const apiPath = req.url;
+      logger.info('[Controller] 通配代理 API 请求: ' + apiPath, {
+        session: req.session ? '(cookie已设置)' : '(无cookie)'
+      });
       
-      // 移除开头的重复斜杠
-      apiPath = apiPath.replace(/^\/+/, '/');
+      const options: RequestInit = {
+        method: req.method as RequestInit['method'],
+        body: req.method !== 'GET' ? JSON.stringify(req.body) : undefined,
+      };
       
-      // 移除 localhost:3000
-      apiPath = apiPath.replace(/\/+localhost:3000\/+/g, '/');
+      const data = await this.apiService.makeRequest(apiPath, options, req.session);
       
-      // 确保路径以单个 /api/ 开头
-      if (!apiPath.startsWith('/api/')) {
-        apiPath = '/api' + apiPath;
-      }
-      
-      // 移除重复的 /api/
-      apiPath = apiPath.replace(/\/api\/+api\//g, '/api/');
-      
-      logger.info('[Controller] 通配代理 API 请求: ' + apiPath);
-      
-      const data = await this.apiService.makeRequest(apiPath, {}, req.session);
       res.json(data);
     } catch (error) {
-      logger.error('[Controller] 通配代理失败', { error, path: req.url });
+      logger.error('[Controller] 通配代理失败', { error, path: req.path });
       throw new ApiError(502, '代理请求失败');
     }
   }
