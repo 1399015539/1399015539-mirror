@@ -8,7 +8,8 @@ export const corsMiddleware = [
         // 允许的域名
         const allowedOrigins = [
             'http://localhost:3030',
-            'http://127.0.0.1:3030'
+            'http://127.0.0.1:3030',
+            'http://47.242.10.190:3030'
         ];
 
         if (allowedOrigins.includes(origin)) {
