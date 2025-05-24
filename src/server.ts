@@ -164,6 +164,9 @@ async function handleResourceRequest(req: express.Request, res: express.Response
       throw new Error('fetch_url tool not found');
     }
 
+    logger.info(`[Fetch] 开始获取资源: ${url}`);
+    logger.info(`[Fetch] 使用会话: ${userSession ? '有会话' : '无会话'}`);
+
     // 获取资源内容
     const result = await fetchHandler({
       url,
@@ -174,11 +177,29 @@ async function handleResourceRequest(req: express.Request, res: express.Response
       headers: userSession ? { 'cookie': userSession } : undefined
     });
 
+    logger.info(`[Fetch] 获取结果:`, { 
+      hasResult: !!result,
+      hasContent: !!result?.content,
+      contentLength: result?.content?.length,
+      firstContentType: result?.content?.[0]?.type,
+      hasText: !!result?.content?.[0]?.text
+    });
+
     if (!result.content?.[0]?.text) {
-      throw new Error('获取资源失败: 内容为空');
+      const errorDetail = `获取资源失败: 内容为空. 详细信息: ${JSON.stringify({
+        result: result,
+        contentArray: result?.content,
+        url: url
+      })}`;
+      logger.error(`[Fetch] ${errorDetail}`);
+      throw new Error(errorDetail);
     }
 
     let content = result.content[0].text;
+    
+    // 获取当前服务器的访问地址
+    const serverHost = req.headers.host || 'localhost:3030';
+    const serverUrl = `http://${serverHost}`;
     
     // 处理 HTML 页面
     if (isHtmlPage) {
@@ -198,7 +219,7 @@ async function handleResourceRequest(req: express.Request, res: express.Response
               try {
                 // 只重写指向 www.midjourney.com 的请求
                 return raw
-                  .replace(/^https?:\/\/(?:www\.)?midjourney\.com/, 'http://localhost:3030');
+                  .replace(/^https?:\/\/(?:www\.)?midjourney\.com/, '${serverUrl}');
               } catch (_) { return raw; }
             }
             // -------------------------------------------------
@@ -241,13 +262,13 @@ async function handleResourceRequest(req: express.Request, res: express.Response
     if (ext === '.js') {
       const beforeLen = content.length;
 
-      // 子域保持路径前缀，其他全部指向根
+      // 使用动态服务器地址进行替换
       content = content
-        .replace(/https?:\/\/(?:www\.)?midjourney\.com/gi, 'http://localhost:3030');
+        .replace(/https?:\/\/(?:www\.)?midjourney\.com/gi, serverUrl);
 
       const afterLen = content.length;
       if (afterLen !== beforeLen) {
-        logger.info(`[JS] 已替换域名 → ${pathStr}`);
+        logger.info(`[JS] 已替换域名 → ${pathStr}, 替换为: ${serverUrl}`);
       }
     }
     
@@ -305,7 +326,13 @@ async function handleResourceRequest(req: express.Request, res: express.Response
     res.send(content);
     
   } catch (error: any) {
-    logger.error(`[Error] 资源代理失败: ${pathStr}`, { error: error.message });
+    logger.error(`[Error] 资源代理失败: ${pathStr}`, { 
+      error: error.message, 
+      stack: error.stack,
+      url: url,
+      accountId: accountId,
+      userSession: userSession ? '有会话' : '无会话'
+    });
     res.status(500).send('Error loading resource');
   }
 }
