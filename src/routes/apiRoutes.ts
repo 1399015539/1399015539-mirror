@@ -49,7 +49,7 @@ router.use((req, res, next) => {
 
     // 设置响应头，确保 cookie 能被正确设置
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Origin', req.headers.origin || 'http://localhost:3000');
+    res.setHeader('Access-Control-Allow-Origin', req.headers.origin || 'http://localhost:3030');
     
     // 如果没有 mj_account cookie，设置它
     if (!cookies.mj_account) {

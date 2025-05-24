@@ -198,7 +198,7 @@ async function handleResourceRequest(req: express.Request, res: express.Response
               try {
                 // 只重写指向 www.midjourney.com 的请求
                 return raw
-                  .replace(/^https?:\/\/(?:www\.)?midjourney\.com/, 'http://localhost:3000');
+                  .replace(/^https?:\/\/(?:www\.)?midjourney\.com/, 'http://localhost:3030');
               } catch (_) { return raw; }
             }
             // -------------------------------------------------
@@ -243,7 +243,7 @@ async function handleResourceRequest(req: express.Request, res: express.Response
 
       // 子域保持路径前缀，其他全部指向根
       content = content
-        .replace(/https?:\/\/(?:www\.)?midjourney\.com/gi, 'http://localhost:3000');
+        .replace(/https?:\/\/(?:www\.)?midjourney\.com/gi, 'http://localhost:3030');
 
       const afterLen = content.length;
       if (afterLen !== beforeLen) {
@@ -356,8 +356,8 @@ export function createServer() {
       // 标准化请求路径
       req.url = req.url.replace(/^\/+/, '/');
       
-      // 移除任何可能的 localhost:3000 引用
-      req.url = req.url.replace(/(?:https?:\/\/)?localhost:3000/g, '');
+      // 移除任何可能的 localhost:3030 引用
+      req.url = req.url.replace(/(?:https?:\/\/)?localhost:3030/g, '');
       
       // 移除重复的 /api/
       req.url = req.url.replace(/\/api\/+api\//g, '/api/');

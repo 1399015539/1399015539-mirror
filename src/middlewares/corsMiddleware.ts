@@ -3,12 +3,12 @@ import { logger } from '../utils/logger.js';
 
 export const corsMiddleware = [
     (req: Request, res: Response, next: NextFunction) => {
-        const origin = req.headers.origin || 'http://localhost:3000';
+        const origin = req.headers.origin || 'http://localhost:3030';
         
         // 允许的域名
         const allowedOrigins = [
-            'http://localhost:3000',
-            'http://127.0.0.1:3000'
+            'http://localhost:3030',
+            'http://127.0.0.1:3030'
         ];
 
         if (allowedOrigins.includes(origin)) {
