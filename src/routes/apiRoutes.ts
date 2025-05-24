@@ -31,6 +31,18 @@ router.options('*', (req, res) => {
 
 // 账号中间件 - 从 cookie 获取账号 ID
 router.use((req, res, next) => {
+    // 定义不需要认证的公开路径
+    const publicPaths = [
+        '/accounts',           // 账号列表
+        '/debug/cache-status'  // 调试状态
+    ];
+    
+    // 如果是公开路径，直接放行
+    if (publicPaths.includes(req.path)) {
+        next();
+        return;
+    }
+    
     const cookies = cookie.parse(req.headers.cookie || '');
     const accountId = cookies.mj_account || 'guest';
     
